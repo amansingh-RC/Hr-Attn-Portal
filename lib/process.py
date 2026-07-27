@@ -10,8 +10,7 @@ Rules implemented, identical to the original:
 2.  SPST normalization in place: PHP->PH, X/X->X, and every status that
     mentions WO (WO, WOP, WO/WOP, WOP/WO, DP/WO, WO/DP...) collapses to a
     plain "WO" — the day is the weekly off however it was punched.
-3.  WO / PH / ABS rows, plus any row whose "Day" is Sunday: ARRV & DEPT
-    blanked, WORK -> 0, OT Hours -> 0, and no distributed OT.
+3.  WO / PH / ABS rows: ARRV & DEPT blanked, WORK -> 0, OT Hours -> 0.
 4.  Every other row: the row's "OT Hours" value is captured, then zeroed.
 5.  ABS/DP & DP/ABS half-days: recorded punches kept; a worked span longer
     than 9.5 h is trimmed to 9.5 h minus 1..30 random minutes by moving
@@ -48,7 +47,6 @@ spstNormalized, workUpdated.
 
 from __future__ import annotations
 
-import datetime as _dt
 import io
 import math
 import random
@@ -258,8 +256,6 @@ def process_workbook(file_bytes: bytes, filename: str = ""):
         "dept": pick("dept") if has_department else None,
         "work": pick("work"),
         "ot": pick("othours"),
-        "day": pick("day", "weekday"),
-        "date": pick("date"),
     }
 
     if col["spst"] is None:
@@ -319,17 +315,6 @@ def process_workbook(file_bytes: bytes, filename: str = ""):
             return
         cell.value = ""
 
-    def is_sunday(R):
-        """The "Day" column ("Sun", "Sunday") decides; a real date cell is
-        the fallback when the sheet has no day-name column."""
-        c = cell_at(R, col["day"])
-        if c is not None and c.value is not None:
-            return str(c.value).strip().lower().startswith("sun")
-        c = cell_at(R, col["date"])
-        if c is not None and isinstance(c.value, (_dt.datetime, _dt.date)):
-            return c.value.weekday() == 6
-        return False
-
     arrv_fixed = 0
     dept_fixed = 0
     spst_normalized = 0
@@ -362,11 +347,8 @@ def process_workbook(file_bytes: bytes, filename: str = ""):
         arrv_cell = cell_at(R, col["arrv"])
         dept_cell = cell_at(R, col["dept"])
 
-        # 2) Sunday / off / holiday / absent: blank punches, zero WORK and OT.
-        #    A Sunday is blanked whatever its status, so DP, LWP, OD... rows
-        #    falling on one never show an arrival or a departure, and no row
-        #    handled here takes any distributed OT.
-        if is_sunday(R) or ns in ("WO", "PH", "ABS"):
+        # 2) Off / holiday / absent: blank punches, zero WORK and OT
+        if ns in ("WO", "PH", "ABS"):
             blank_cell(arrv_cell)
             blank_cell(dept_cell)
             write_work(R, 0)
