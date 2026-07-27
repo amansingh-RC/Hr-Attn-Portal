@@ -37,7 +37,7 @@ def main():
     st.write("")
 
     with st.container(border=True):
-        st.markdown("#### 📊 Royal Chains HR Data")
+        st.markdown("#### 📊 Royal Chain HR Data")
         st.caption(
             "Select an Excel file (.xlsx, .xls, .csv). The file will be processed "
             "and the updated copy offered for download."

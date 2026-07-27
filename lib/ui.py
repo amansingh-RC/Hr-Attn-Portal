@@ -28,7 +28,7 @@ def inject_css():
         .rc-topbar {{
             display:flex; align-items:center; justify-content:space-between;
             background:#fff; padding:.75rem 1.25rem; border-radius:.75rem;
-            box-shadow:0 1px 2px rgba(0,0,0,.05); margin-bottom:1.25rem;
+            box-shadow:0 1px 2px rgba(0,0,0,.05); margin-bottom:1.25rem; margin-top:1.25rem;
         }}
         .rc-topbar img {{ height:40px; }}
         .rc-avatar {{
@@ -39,6 +39,7 @@ def inject_css():
 
         div[data-testid="stMetricValue"] {{ color:{BRAND}; }}
         div[data-testid="stFileUploaderDropzone"] {{ border-radius:.75rem; }}
+
         </style>
         """,
         unsafe_allow_html=True,

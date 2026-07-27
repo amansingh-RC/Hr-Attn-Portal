@@ -7,11 +7,11 @@ Rules implemented, identical to the original:
 1.  Header detection: column names are matched case/space/underscore/slash
     -insensitively. "DEPT" is treated as the departure-time column only when
     a separate "Department" column also exists.
-2.  SPST normalization in place: WOP->WO, PHP->PH, X/X->X (WOP/WO -> WO...).
-    Any row whose "Day" is Sunday has its SPST rewritten to WO, whatever it
-    held before (DP, DP/WO, LWP, OD...).
-3.  WO / PH / ABS rows — Sundays included, by rule 2: ARRV & DEPT blanked,
-    WORK -> 0, OT Hours -> 0, and the row takes no distributed OT.
+2.  SPST normalization in place: PHP->PH, X/X->X, and every status that
+    mentions WO (WO, WOP, WO/WOP, WOP/WO, DP/WO, WO/DP...) collapses to a
+    plain "WO" — the day is the weekly off however it was punched.
+3.  WO / PH / ABS rows, plus any row whose "Day" is Sunday: ARRV & DEPT
+    blanked, WORK -> 0, OT Hours -> 0, and no distributed OT.
 4.  Every other row: the row's "OT Hours" value is captured, then zeroed.
 5.  ABS/DP & DP/ABS half-days: recorded punches kept; a worked span longer
     than 9.5 h is trimmed to 9.5 h minus 1..30 random minutes by moving
@@ -347,11 +347,10 @@ def process_workbook(file_bytes: bytes, filename: str = ""):
 
         status = str(spst_cell.value or "").upper().strip()
         ns = normalize_status(status)
-        sunday = is_sunday(R)
 
-        # A Sunday is the weekly off whatever the raw status says (DP, DP/WO,
-        # LWP, OD...), so its SPST is rewritten to WO.
-        if sunday:
+        # Any status mentioning WO is a weekly off: WO, WOP, WO/WOP, WOP/WO,
+        # DP/WO, WO/DP... all collapse to a plain "WO".
+        if "WO" in ns:
             ns = "WO"
 
         # 1) Normalize SPST in place
@@ -364,9 +363,10 @@ def process_workbook(file_bytes: bytes, filename: str = ""):
         dept_cell = cell_at(R, col["dept"])
 
         # 2) Sunday / off / holiday / absent: blank punches, zero WORK and OT.
-        #    A Sunday is blanked whatever its status, so DP, DP/WO, LWP, OD...
-        #    rows never show an arrival or a departure and never take OT.
-        if ns in ("WO", "PH", "ABS"):
+        #    A Sunday is blanked whatever its status, so DP, LWP, OD... rows
+        #    falling on one never show an arrival or a departure, and no row
+        #    handled here takes any distributed OT.
+        if is_sunday(R) or ns in ("WO", "PH", "ABS"):
             blank_cell(arrv_cell)
             blank_cell(dept_cell)
             write_work(R, 0)
