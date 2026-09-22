@@ -115,6 +115,40 @@ def parse_time_to_minutes(value):
     return hours * 60 + mins
 
 
+def parse_time_loose(value):
+    """parse_time_to_minutes() plus the dotted clock notation used by the
+    contractor paysheets ("9.00 AM", "7.00 PM ").
+
+    Kept separate from parse_time_to_minutes so the HR engine keeps matching
+    the original backend byte for byte — only lib/contractor.py uses this.
+    """
+    m = parse_time_to_minutes(value)
+    if m is not None:
+        return m
+    if value is None or isinstance(value, bool) or isinstance(value, (int, float)):
+        return None
+
+    s = str(value).strip()
+    # "9.00 AM" / "7.00 PM" — only with an explicit meridiem, so a bare
+    # decimal such as "9.5" is never mistaken for a clock time.
+    mt = re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.\d{1,2})?\s*(AM|PM)$", s, re.IGNORECASE)
+    if not mt:
+        return None
+
+    hours = int(mt.group(1))
+    mins = int(mt.group(2))
+    ampm = mt.group(3).upper()
+
+    if ampm == "PM" and hours != 12:
+        hours += 12
+    if ampm == "AM" and hours == 12:
+        hours = 0
+
+    if hours < 0 or hours > 23 or mins < 0 or mins > 59:
+        return None
+    return hours * 60 + mins
+
+
 def format_minutes_to_time(minutes) -> str:
     """"hh:mm AM/PM" from minutes-since-midnight (wraps across midnight)."""
     total = ((int(round(minutes)) % MIN_PER_DAY) + MIN_PER_DAY) % MIN_PER_DAY

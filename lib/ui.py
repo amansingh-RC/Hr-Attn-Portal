@@ -40,6 +40,14 @@ def inject_css():
         div[data-testid="stMetricValue"] {{ color:{BRAND}; }}
         div[data-testid="stFileUploaderDropzone"] {{ border-radius:.75rem; }}
 
+        /* Tabs — brand-coloured underline and active label */
+        .stTabs [data-baseweb="tab-list"] {{ gap:.5rem; border-bottom:1px solid #e5e7eb; }}
+        .stTabs [data-baseweb="tab"] {{
+            font-weight:600; color:#6b7280; padding:.5rem 1rem;
+        }}
+        .stTabs [aria-selected="true"] {{ color:{BRAND}; }}
+        .stTabs [data-baseweb="tab-highlight"] {{ background:{BRAND}; }}
+
         </style>
         """,
         unsafe_allow_html=True,
