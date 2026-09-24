@@ -11,12 +11,15 @@ workbook *shape*:
 2.  The monthly OT total does not live in the attendance grid — it comes from
     the "Wages Register" sheet's "OT Hrs" column, matched per employee on
     (Employee Code, Employee Name). The pair is the key because a contractor
-    code is not unique: RCC000 covers two different people.
+    code is not unique: RCC000 covers two different people. An empty "OT Hrs"
+    simply means no OT that month.
+2a. Header spellings vary between contractors ("Employee Code" vs "Emp Code",
+    "WORK" vs "Work"), so columns are matched on a normalized name.
 3.  SHIFT IN / SHIFT OUT are dotted text ("9.00 AM", "7.00 PM "), so times are
     read with parse_time_loose().
-4.  ARRV / DEPT / WORK are 24-hour text ("09:02", "18:31", "09:29") and are
-    written back in that same notation, keeping the output identical in shape
-    to the input.
+4.  Punches are read as text in either notation and written back as text:
+    ARRV / DEPT as 12-hour clock readings ("09:02 AM", "06:31 PM"), WORK as a
+    plain HH:MM duration ("09:29") since a span has no AM/PM.
 5.  A qualifying day's OT is written back into the attendance "OT Hours"
     column as the per-day figure, so the column sums to the Wages Register
     total for that employee.
@@ -24,7 +27,9 @@ workbook *shape*:
 Rules applied per row, matching lib/process.py:
 
 *   SPST is normalized in place; anything mentioning WO collapses to "WO".
-*   WO / PH / ABS: punches blanked, WORK -> 00:00, OT -> 0.
+*   WO / PH / ABS / PL: the person did not work, so ARRV, DEPT, OT Hours and
+    WORK are all left genuinely empty — no 00:00, no 0, nothing invented for a
+    day nobody was there.
 *   ABS/DP and DP/ABS half-days: punches kept, a span over 9.5 h trimmed to
     9.5 h minus 1..30 min by moving DEPT (ABS/DP) or ARRV (DP/ABS).
 *   DP days with a full shift: ARRV = shift-in + 0..20 min; DEPT keeps a
@@ -48,17 +53,35 @@ import re
 
 from openpyxl import load_workbook
 
-from .process import (
-    OT_CONFIG,
-    _normalize_key,
-    _rand_int,
-    _wrap_day,
-    distribute_ot,
+from .process import OT_CONFIG, _normalize_key, _rand_int, distribute_ot
+from .utils import (
+    MIN_PER_DAY,
+    format_minutes_to_time,
+    js_parse_float,
+    js_round,
+    normalize_status,
+    parse_time_loose,
 )
-from .utils import MIN_PER_DAY, js_parse_float, js_round, normalize_status, parse_time_loose
 
 # How far down a sheet to look for its header row before giving up.
 _HEADER_SCAN_ROWS = 30
+
+# Statuses that mean the person did not work that day. ARRV, DEPT, OT Hours
+# and WORK are all left genuinely empty for these rows — nothing is invented
+# for a day nobody was there, not even a 00:00.
+NON_WORKING = ("WO", "PH", "ABS", "PL")
+
+# Header spellings seen across contractor books for the same two columns.
+_CODE_KEYS = ("employeecode", "empcode", "code")
+_NAME_KEYS = ("employeename", "empname", "name")
+
+
+def _pick(hm, keys):
+    """First of `keys` present in a header map."""
+    for k in keys:
+        if k in hm:
+            return hm[k]
+    return None
 
 
 def _match_key(value) -> str:
@@ -118,7 +141,7 @@ def _find_wages(wb, skip_title):
     """The sheet holding the monthly OT totals."""
 
     def looks_like_wages(hm):
-        has_code = "employeecode" in hm or "code" in hm
+        has_code = any(k in hm for k in _CODE_KEYS)
         has_ot = any(k in hm for k in ("othrs", "othours", "othour", "ot"))
         return has_code and has_ot
 
@@ -137,8 +160,8 @@ def _read_wages_ot(ws, hrow, hm, ws_vals):
     results when the cell holds a formula, so a computed "OT Hrs" column still
     works.
     """
-    c_code = hm.get("employeecode") or hm.get("code")
-    c_name = hm.get("employeename") or hm.get("name")
+    c_code = _pick(hm, _CODE_KEYS)
+    c_name = _pick(hm, _NAME_KEYS)
     c_ot = hm.get("othrs") or hm.get("othours") or hm.get("othour") or hm.get("ot")
 
     by_pair: dict[tuple[str, str], float] = {}
@@ -167,9 +190,12 @@ def _read_wages_ot(ws, hrow, hm, ws_vals):
 
 
 def _fmt_clock(minutes) -> str:
-    """Minutes since midnight as the sheet's own 24-hour text, e.g. "18:31"."""
-    total = _wrap_day(js_round(minutes))
-    return f"{total // 60:02d}:{total % 60:02d}"
+    """A punch time as 12-hour text, e.g. "06:31 PM".
+
+    Only ARRV and DEPT go through here. WORK is a duration, not a clock
+    reading, so it keeps the plain HH:MM form via _fmt_span().
+    """
+    return format_minutes_to_time(js_round(minutes))
 
 
 def _fmt_span(minutes) -> str:
@@ -206,8 +232,8 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         )
 
     col = {
-        "code": hm.get("employeecode") or hm.get("code"),
-        "name": hm.get("employeename") or hm.get("name"),
+        "code": _pick(hm, _CODE_KEYS),
+        "name": _pick(hm, _NAME_KEYS),
         "spst": hm.get("spst") or hm.get("status"),
         "shiftIn": hm.get("shiftin"),
         "shiftOut": hm.get("shiftout"),
@@ -262,15 +288,18 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         c.value = round(hours, 2)
         c.number_format = "0.0"
 
-    def blank_cell(cell):
-        if cell is None or cell.value is None:
+    def clear_cell(R, C):
+        """Leave the cell genuinely empty — no 0, no "00:00", no blank string."""
+        if C is None:
             return
-        cell.value = ""
+        c = ws.cell(row=R, column=C)
+        c.value = None
 
     arrv_fixed = 0
     dept_fixed = 0
     spst_normalized = 0
     work_updated = 0
+    blanked_rows = 0
 
     employees: dict[tuple[str, str], dict] = {}
 
@@ -289,15 +318,13 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
             spst_cell.value = ns
             spst_normalized += 1
 
-        arrv_cell = cell_at(R, col["arrv"])
-        dept_cell = cell_at(R, col["dept"])
-
-        # Off / holiday / absent — no punches, no work, no OT
-        if ns in ("WO", "PH", "ABS"):
-            blank_cell(arrv_cell)
-            blank_cell(dept_cell)
-            write_work(R, 0)
-            write_ot(R, 0)
+        # Weekly off / holiday / absent / paid leave — the person did not work,
+        # so all four generated columns stay empty rather than being filled
+        # with zeroes.
+        if ns in NON_WORKING:
+            for C in (col["arrv"], col["dept"], col["ot"], col["work"]):
+                clear_cell(R, C)
+            blanked_rows += 1
             continue
 
         si_min = read_min(R, col["shiftIn"])
@@ -475,6 +502,7 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         "deptFixed": dept_fixed,
         "spstNormalized": spst_normalized,
         "workUpdated": work_updated,
+        "blankedRows": blanked_rows,
         "otHours": round(ot_assigned, 2),
         "matched": matched,
         "unmatched": unmatched,

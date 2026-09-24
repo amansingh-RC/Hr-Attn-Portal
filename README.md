@@ -40,14 +40,24 @@ around rather than assume sheet 1:
 | Concern | HR tab | Contractor tab |
 |---------|--------|----------------|
 | **Attendance grid** | first sheet | any sheet with `SPST` + `ARRV`/`DEPT` headers; sheets named `*atten*`/`*muster*` are tried first |
-| **Monthly OT total** | the `OT Hours` column, repeated on every row of the employee | the wages sheet's `OT Hrs` column (sheets named `*wage*`/`*pay*`/`*salary*` first) |
+| **Monthly OT total** | the `OT Hours` column, repeated on every row of the employee | the wages sheet's `OT Hrs` column (sheets named `*wage*`/`*pay*`/`*salary*` first); empty means no OT that month |
 | **Employee key** | `Employee Code` | `Employee Code` **+** `Employee Name` — a contractor code is not unique (`RCC000` covers two people) |
+| **Header spelling** | fixed | `Employee Code` / `Emp Code` and `WORK` / `Work` both match — names are normalized |
 | **Shift times** | real time cells (`9:30 AM`) | dotted text (`9.00 AM`), read with `parse_time_loose()` |
-| **Times written as** | Excel day-fractions | 24-hour text (`09:05`, `18:31`), matching the sheet's own notation |
+| **Times written as** | Excel day-fractions | text — `ARRV`/`DEPT` as 12-hour clock readings (`09:05 AM`, `06:31 PM`), `WORK` as a plain `HH:MM` duration (`09:26`), since a span has no AM/PM |
 | **`OT Hours` column** | zeroed | receives the **per-day** OT, so the column sums to the wages-register total |
 
 Every other sheet in the workbook — invoice, wages register — is left exactly
 as it was, formulas included.
+
+**Raw sheets are the normal input.** `ARRV`, `DEPT`, `OT Hours` and `WORK` can
+all arrive empty; they are generated from `SHIFT IN` / `SHIFT OUT` and the
+wages register. A sheet that already has them filled works too — see the
+fallback note below.
+
+**Days nobody worked stay empty.** `WO`, `PH`, `ABS` and `PL` rows get nothing
+written into any of the four columns — no `0`, no `00:00`, no blank string.
+Combined statuses (`ABS/DP`, `DP/ABS`) are half-days and are still processed.
 
 **The 9.5 h rest cap and OT.** A contractor shift can be longer than the cap
 (9:00 AM–7:00 PM is 10 h). The ordinary part of the day is still capped at

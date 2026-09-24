@@ -147,8 +147,15 @@ def contractor_tab():
         st.caption(
             f"Attendance sheet: **{stats['attendanceSheet']}** · "
             f"OT source: **{stats['wagesSheet']}** · "
-            f"{stats['otHours']:g} OT hours distributed"
+            f"{stats['otHours']:g} OT hours distributed · "
+            f"{stats['blankedRows']} off / absent rows left blank"
         )
+        if not stats["otHours"] and stats["matched"]:
+            st.info(
+                "The wages sheet has no OT hours for anyone this month, so every "
+                "OT Hours cell is 0. Fill in the **OT Hrs** column of the wages "
+                "sheet and upload again if that is not right."
+            )
         if stats["unmatched"]:
             st.warning(
                 "No Wages Register row matched these employees, so they were "
@@ -173,7 +180,8 @@ def contractor_tab():
         title="👷 Contractor Paysheet",
         caption=(
             "Select the contractor paysheet workbook (.xlsx, .xlsm). It must "
-            "contain required Columns "
+            "contain required Columns — ARRV, DEPT, OT Hours and WORK may come "
+            "in empty, they are generated here. WO / PH / ABS / PL days stay blank."
         ),
         types=["xlsx", "xlsm"],
         prefix="RC_Contractor_Processed_",
