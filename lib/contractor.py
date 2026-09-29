@@ -43,8 +43,8 @@ Rules applied per row, matching lib/process.py:
     granted, so WORK = capped base + OT. The 9 h 15 m cap therefore still
     holds for the ordinary part of the day whatever the shift length.
 *   A "Paid Days" figure ending in .5 puts one half day on the month: a day
-    with no OT on it is shortened to finish around 1:30 PM, and never runs
-    shorter than 4 hours.
+    with no OT on it is shortened to finish around 1:30 PM, never running
+    shorter than 4 hours, and its SPST is rewritten to "DP/ABS".
 
 Returns the processed workbook bytes plus a stats dict.
 """
@@ -90,6 +90,7 @@ DEPT_JITTER_MIN = 20
 HALF_DAY_DEPT_MIN = 13 * 60 + 30      # 1:30 PM
 HALF_DAY_JITTER_MIN = 15              # +/- 15 min either side of it
 HALF_DAY_MIN_WORK_MIN = 4 * 60        # the day is still at least 4 h long
+HALF_DAY_STATUS = "DP/ABS"            # SPST written on that day
 
 # Header spellings seen across contractor books for the same two columns.
 _CODE_KEYS = ("employeecode", "empcode", "code")
@@ -323,6 +324,17 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         c = ws.cell(row=R, column=C)
         c.value = None
 
+    def write_status(R, value):
+        if col["spst"] is not None:
+            ws.cell(row=R, column=col["spst"]).value = value
+
+    def row_key(R):
+        """(code, name) for a row — the identity employees are grouped by."""
+        return (
+            _match_key(cell_at(R, col["code"]).value if col["code"] else ""),
+            _match_key(cell_at(R, col["name"]).value if col["name"] else ""),
+        )
+
     arrv_fixed = 0
     dept_fixed = 0
     spst_normalized = 0
@@ -330,6 +342,7 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
     blanked_rows = 0
 
     employees: dict[tuple[str, str], dict] = {}
+    existing_half: set[tuple[str, str]] = set()
 
     # ── First pass: normalize each row, collect the OT-managed days ───────
     for R in range(header_row + 1, (ws.max_row or header_row) + 1):
@@ -358,8 +371,11 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         si_min = read_min(R, col["shiftIn"])
         so_min = read_min(R, col["shiftOut"])
 
-        # Half-days: keep the recorded punches, trim anything over 9.5 h
+        # Half-days: keep the recorded punches, trim anything over the cap.
+        # A row already marked this way is the month's half day — remembering
+        # it stops a second one being added when an output file is fed back in.
         if ns in ("ABS/DP", "DP/ABS"):
+            existing_half.add(row_key(R))
             a = read_min(R, col["arrv"])
             d = read_min(R, col["dept"])
             write_ot(R, 0)
@@ -384,9 +400,8 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         eligible = ("DP" in ns) and si_min is not None and so_min is not None
 
         if eligible:
-            ck = _match_key(cell_at(R, col["code"]).value if col["code"] else "")
-            nk = _match_key(cell_at(R, col["name"]).value if col["name"] else "")
-            key = (ck, nk)
+            key = row_key(R)
+            ck, nk = key
             e = employees.get(key)
             if e is None:
                 e = {"days": [], "code": ck, "name": nk}
@@ -524,12 +539,17 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         # The half day goes on a day no OT landed on, so neither rule disturbs
         # the other. It is only possible if such a day exists.
         if wants_half_day:
-            free = [d for d in e["days"] if not d.get("otMin")]
-            if free:
-                random.choice(free)["halfDay"] = True
-                half_days += 1
+            if key in existing_half:
+                half_days += 1  # already marked, from an earlier run
             else:
-                half_unplaced.append(f"{ck} / {nk}".strip(" /"))
+                free = [d for d in e["days"] if not d.get("otMin")]
+                if free:
+                    hd = random.choice(free)
+                    hd["halfDay"] = True
+                    write_status(hd["R"], HALF_DAY_STATUS)
+                    half_days += 1
+                else:
+                    half_unplaced.append(f"{ck} / {nk}".strip(" /"))
 
         for d in e["days"]:
             ot_min = d.get("otMin", 0) or 0

@@ -63,10 +63,15 @@ Combined statuses (`ABS/DP`, `DP/ABS`) are half-days and are still processed.
 means one of the employee's days was worked half. A day that no OT landed on is
 picked at random and shortened to finish **around 1:30 PM** (±15 min), never on
 less than **4 hours** — if the arrival is late enough that 1:30 PM would fall
-short of four hours, the departure moves later instead. Choosing an OT-free day
-keeps the month's OT total untouched. If *every* working day already carries
-OT there is nowhere to put the half day, and the UI names those employees
-rather than silently skipping them.
+short of four hours, the departure moves later instead. That day's `SPST` is
+rewritten to **`DP/ABS`**. Choosing an OT-free day keeps the month's OT total
+untouched. If *every* working day already carries OT there is nowhere to put
+the half day, and the UI names those employees rather than silently skipping
+them.
+
+Because `DP/ABS` is itself a status the engine recognises, feeding a processed
+file back in finds the existing half day instead of adding a second one — the
+result is stable across repeated runs.
 
 **The 9 h 15 m cap and OT.** A day carrying no OT never exceeds **9 h 15 m** of
 work, whatever the shift length. OT is added on top of that capped base, so
