@@ -42,6 +42,9 @@ Rules applied per row, matching lib/process.py:
 *   On an OT day the trimmed departure is pushed later by exactly the OT
     granted, so WORK = capped base + OT. The 9 h 15 m cap therefore still
     holds for the ordinary part of the day whatever the shift length.
+*   A "Paid Days" figure ending in .5 puts one half day on the month: a day
+    with no OT on it is shortened to finish around 1:30 PM, and never runs
+    shorter than 4 hours.
 
 Returns the processed workbook bytes plus a stats dict.
 """
@@ -80,6 +83,13 @@ MAX_PLAIN_WORK_MIN = 9 * 60 + 15
 # Generated departures land this many minutes (0..N) before the latest minute
 # the cap allows, so the DEPT column is not the same time on every row.
 DEPT_JITTER_MIN = 20
+
+# A "Paid Days" figure ending in .5 (25.5, 16.5) means the month holds one half
+# day. One of the employee's OT-free days is shortened to finish around 1:30 PM,
+# never working less than 4 hours.
+HALF_DAY_DEPT_MIN = 13 * 60 + 30      # 1:30 PM
+HALF_DAY_JITTER_MIN = 15              # +/- 15 min either side of it
+HALF_DAY_MIN_WORK_MIN = 4 * 60        # the day is still at least 4 h long
 
 # Header spellings seen across contractor books for the same two columns.
 _CODE_KEYS = ("employeecode", "empcode", "code")
@@ -163,38 +173,46 @@ def _find_wages(wb, skip_title):
     return None, None, None
 
 
-def _read_wages_ot(ws, hrow, hm, ws_vals):
-    """Monthly OT hours per employee from the wages sheet.
+def _read_wages(ws, hrow, hm, ws_vals):
+    """Monthly OT hours and paid days per employee from the wages sheet.
 
-    Returns (by_code_and_name, by_code). Values are read from the cached
-    results when the cell holds a formula, so a computed "OT Hrs" column still
-    works.
+    Returns (by_code_and_name, by_code), each mapping to
+    {"ot": hours, "paid": days}. Values are read from the cached results when
+    the cell holds a formula, so computed columns still work.
     """
     c_code = _pick(hm, _CODE_KEYS)
     c_name = _pick(hm, _NAME_KEYS)
     c_ot = hm.get("othrs") or hm.get("othours") or hm.get("othour") or hm.get("ot")
+    c_paid = hm.get("paiddays") or hm.get("paidday")
 
-    by_pair: dict[tuple[str, str], float] = {}
-    by_code: dict[str, float] = {}
+    by_pair: dict[tuple[str, str], dict] = {}
+    by_code: dict[str, dict] = {}
     if c_code is None or c_ot is None:
         return by_pair, by_code
+
+    def number_at(r, c):
+        if c is None:
+            return 0.0
+        raw = ws.cell(row=r, column=c).value
+        if isinstance(raw, str) and raw.startswith("=") and ws_vals is not None:
+            raw = ws_vals.cell(row=r, column=c).value
+        v = js_parse_float(raw)
+        return 0.0 if math.isnan(v) or v < 0 else v
 
     for r in range(hrow + 1, (ws.max_row or hrow) + 1):
         code_raw = ws.cell(row=r, column=c_code).value
         if code_raw is None or str(code_raw).strip() == "":
             continue  # totals row / spacer
 
-        raw = ws.cell(row=r, column=c_ot).value
-        if isinstance(raw, str) and raw.startswith("=") and ws_vals is not None:
-            raw = ws_vals.cell(row=r, column=c_ot).value
-        ot = js_parse_float(raw)
-        if math.isnan(ot) or ot < 0:
-            ot = 0.0
+        ot = number_at(r, c_ot)
+        paid = number_at(r, c_paid)
 
         ck = _match_key(code_raw)
         nk = _match_key(ws.cell(row=r, column=c_name).value if c_name else "")
-        by_pair[(ck, nk)] = by_pair.get((ck, nk), 0.0) + ot
-        by_code[ck] = by_code.get(ck, 0.0) + ot
+        for store, key in ((by_pair, (ck, nk)), (by_code, ck)):
+            row = store.setdefault(key, {"ot": 0.0, "paid": 0.0})
+            row["ot"] += ot
+            row["paid"] += paid
 
     return by_pair, by_code
 
@@ -262,7 +280,7 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
             "'OT Hrs' columns (for example 'Wages Register') holding the "
             "monthly OT total per employee."
         )
-    ot_by_pair, ot_by_code = _read_wages_ot(
+    wages_by_pair, wages_by_code = _read_wages(
         wages_ws,
         wages_row,
         wages_hm,
@@ -441,18 +459,23 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
     shortfall = 0.0
     unmatched: list[str] = []
     widened: list[str] = []
+    half_days = 0
+    half_unplaced: list[str] = []
 
     for key, e in employees.items():
         ck, nk = key
-        if key in ot_by_pair:
-            ot_raw = ot_by_pair[key]
-            matched += 1
-        elif ck in ot_by_code:
-            ot_raw = ot_by_code[ck]
+        row = wages_by_pair.get(key) or wages_by_code.get(ck)
+        if row is not None:
+            ot_raw = row["ot"]
+            paid_days = row["paid"]
             matched += 1
         else:
             ot_raw = 0.0
+            paid_days = 0.0
             unmatched.append(f"{ck} / {nk}".strip(" /"))
+
+        # "Paid Days" of 25.5 means one of the month's days was a half day.
+        wants_half_day = abs(paid_days - math.floor(paid_days) - 0.5) < 0.01
 
         int_hours = math.floor(ot_raw)
         frac_min = js_round((ot_raw - int_hours) * 60)
@@ -498,10 +521,30 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         for i, d in enumerate(ot_days):
             d["otMin"] = day_ot_min[i]
 
+        # The half day goes on a day no OT landed on, so neither rule disturbs
+        # the other. It is only possible if such a day exists.
+        if wants_half_day:
+            free = [d for d in e["days"] if not d.get("otMin")]
+            if free:
+                random.choice(free)["halfDay"] = True
+                half_days += 1
+            else:
+                half_unplaced.append(f"{ck} / {nk}".strip(" /"))
+
         for d in e["days"]:
             ot_min = d.get("otMin", 0) or 0
-            worked = d["base"] + ot_min
-            dep = d["arr"] + worked
+
+            if d.get("halfDay"):
+                # finish around 1:30 PM, but never on less than 4 hours
+                dep = max(
+                    d["arr"] + HALF_DAY_MIN_WORK_MIN,
+                    HALF_DAY_DEPT_MIN
+                    + _rand_int(-HALF_DAY_JITTER_MIN, HALF_DAY_JITTER_MIN),
+                )
+                worked = dep - d["arr"]
+            else:
+                worked = d["base"] + ot_min
+                dep = d["arr"] + worked
 
             write_clock(d["R"], col["dept"], dep)
             dept_fixed += 1
@@ -526,6 +569,8 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
         "unmatched": unmatched,
         "widened": widened,
         "shortfall": round(shortfall, 2),
+        "halfDays": half_days,
+        "halfDayUnplaced": half_unplaced,
         "attendanceSheet": ws.title,
         "wagesSheet": wages_ws.title,
     }

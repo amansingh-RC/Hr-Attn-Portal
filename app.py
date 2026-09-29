@@ -148,8 +148,15 @@ def contractor_tab():
             f"Attendance sheet: **{stats['attendanceSheet']}** · "
             f"OT source: **{stats['wagesSheet']}** · "
             f"{stats['otHours']:g} OT hours distributed · "
-            f"{stats['blankedRows']} off / absent rows left blank"
+            f"{stats['blankedRows']} off / absent rows left blank · "
+            f"{stats['halfDays']} half day(s) from .5 paid days"
         )
+        if stats["halfDayUnplaced"]:
+            st.warning(
+                "These employees have a .5 in Paid Days but every working day "
+                "already carries OT, so no day could be made a half day: "
+                + ", ".join(stats["halfDayUnplaced"])
+            )
         if not stats["otHours"] and stats["matched"]:
             st.info(
                 "The wages sheet has no OT hours for anyone this month, so every "
