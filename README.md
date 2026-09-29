@@ -59,11 +59,15 @@ fallback note below.
 written into any of the four columns — no `0`, no `00:00`, no blank string.
 Combined statuses (`ABS/DP`, `DP/ABS`) are half-days and are still processed.
 
-**The 9.5 h rest cap and OT.** A contractor shift can be longer than the cap
-(9:00 AM–7:00 PM is 10 h). The ordinary part of the day is still capped at
-9.5 h minus 0–30 min, and the OT granted is added on top of *that*, so
-`WORK = capped base + OT`. On a 1 h OT day the result is ≈ `10:07`, not
-`11:00`.
+**The 9 h 15 m cap and OT.** A day carrying no OT never exceeds **9 h 15 m** of
+work, whatever the shift length. OT is added on top of that capped base, so
+`WORK = capped base + OT`.
+
+**Departures are generated, not snapped.** With nothing recorded in `DEPT`, the
+departure is `min(shift-out, ARRV + 9 h 15 m)` minus a random 0–20 min. Snapping
+to shift-out printed the identical time on every row whenever the shift was no
+longer than the cap — a 9:30 AM–7:00 PM shift gave `07:00 PM` on all of them.
+A punch that *is* recorded within ±60 min of shift-out is still kept as-is.
 
 **When the paid OT does not fit.** OT normally goes only to a pure `DP` day
 whose recorded span is not already longer than the shift. If those days cannot

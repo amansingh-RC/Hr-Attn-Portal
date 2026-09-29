@@ -32,14 +32,16 @@ Rules applied per row, matching lib/process.py:
     day nobody was there.
 *   ABS/DP and DP/ABS half-days: punches kept, a span over 9.5 h trimmed to
     9.5 h minus 1..30 min by moving DEPT (ABS/DP) or ARRV (DP/ABS).
-*   DP days with a full shift: ARRV = shift-in + 0..20 min; DEPT keeps a
-    recorded punch within +/-60 min of shift-out, else snaps to shift-out; a
-    base span over 9.5 h is trimmed to 9.5 h minus 0..30 min.
+*   DP days with a full shift: ARRV = shift-in + 0..20 min. DEPT keeps a
+    recorded punch within +/-60 min of shift-out; with nothing recorded it is
+    generated as `min(shift-out, ARRV + 9 h 15 m)` minus 0..20 min, so the
+    column varies instead of printing shift-out on every row. A span over
+    9 h 15 m is trimmed to 9 h 15 m minus 0..30 min.
 *   The employee's monthly OT is split over the qualifying days in 1..2 h
     chunks (distribute_ot), a fractional .5 riding on one day as 1 h 30 m.
 *   On an OT day the trimmed departure is pushed later by exactly the OT
-    granted, so WORK = capped base + OT. The 9.5 h rest cap therefore still
-    holds for the ordinary part of the day even on a 10 h shift.
+    granted, so WORK = capped base + OT. The 9 h 15 m cap therefore still
+    holds for the ordinary part of the day whatever the shift length.
 
 Returns the processed workbook bytes plus a stats dict.
 """
@@ -70,6 +72,14 @@ _HEADER_SCAN_ROWS = 30
 # and WORK are all left genuinely empty for these rows — nothing is invented
 # for a day nobody was there, not even a 00:00.
 NON_WORKING = ("WO", "PH", "ABS", "PL")
+
+# Contractor days are capped tighter than the HR engine's 9.5 h: a day with no
+# OT on it never exceeds 9 h 15 m of work.
+MAX_PLAIN_WORK_MIN = 9 * 60 + 15
+
+# Generated departures land this many minutes (0..N) before the latest minute
+# the cap allows, so the DEPT column is not the same time on every row.
+DEPT_JITTER_MIN = 20
 
 # Header spellings seen across contractor books for the same two columns.
 _CODE_KEYS = ("employeecode", "empcode", "code")
@@ -339,8 +349,8 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
                 w = d - a
                 if w < 0:
                     w += MIN_PER_DAY
-                if w > OT_CONFIG["trimTargetMin"]:
-                    target = OT_CONFIG["trimTargetMin"] - _rand_int(
+                if w > MAX_PLAIN_WORK_MIN:
+                    target = MAX_PLAIN_WORK_MIN - _rand_int(
                         1, OT_CONFIG["noOtTrimRandomMin"]
                     )
                     if ns == "ABS/DP":
@@ -373,8 +383,16 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
             write_clock(R, col["arrv"], arr)
             arrv_fixed += 1
 
-            # check-out: keep a natural punch near shift-out, else snap to it
-            dep = orig_dep if (orig_dep is not None and abs(orig_dep - so_min) <= W) else so_min
+            # check-out: keep a natural punch near shift-out. With nothing
+            # recorded, leave from the latest minute the cap allows, a random
+            # few minutes early — snapping to shift-out would print the same
+            # DEPT on every row.
+            if orig_dep is not None and abs(orig_dep - so_min) <= W:
+                dep = orig_dep
+            else:
+                dep = min(so_min, arr + MAX_PLAIN_WORK_MIN) - _rand_int(
+                    0, DEPT_JITTER_MIN
+                )
 
             base_worked = dep - arr
             if base_worked < 0:
@@ -383,9 +401,9 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
             # OT only on a pure DP day whose recorded work is not already long
             ot_ok = ns == "DP" and base_worked <= shift_len + OT_CONFIG["otWorkedSlackMin"]
 
-            # rest cap: the ordinary part of the day never exceeds 9.5 h
-            if base_worked > OT_CONFIG["trimTargetMin"]:
-                base_worked = OT_CONFIG["trimTargetMin"] - _rand_int(
+            # rest cap: without OT the day never exceeds 9 h 15 m
+            if base_worked > MAX_PLAIN_WORK_MIN:
+                base_worked = MAX_PLAIN_WORK_MIN - _rand_int(
                     0, OT_CONFIG["noOtTrimRandomMin"]
                 )
 
@@ -407,8 +425,8 @@ def process_contractor_workbook(file_bytes: bytes, filename: str = ""):
                 w = d - a
                 if w < 0:
                     w += MIN_PER_DAY
-                if w > OT_CONFIG["trimTargetMin"]:
-                    target = OT_CONFIG["trimTargetMin"] - _rand_int(
+                if w > MAX_PLAIN_WORK_MIN:
+                    target = MAX_PLAIN_WORK_MIN - _rand_int(
                         0, OT_CONFIG["noOtTrimRandomMin"]
                     )
                     write_clock(R, col["dept"], a + target)
